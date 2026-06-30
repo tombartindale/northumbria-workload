@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 /Users/nhqr5/Documents/Teaching/Workload/generate_allocation_pdfs.py \"/Users/nhqr5/Documents/Teaching/Workload/2026-27 Resources Planner - School of Computer Science \\(updated 2026-03-20\\).xlsm\" --id NHQR5 -o /Users/nhqr5/Documents/Teaching/Workload/preview)",
+      "Bash(pip3 install *)"
+    ]
+  }
+}
