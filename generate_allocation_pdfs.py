@@ -94,7 +94,8 @@ CATEGORY_SHORT = {"teaching": "Teaching & Assessment",
 # Labels suppressed from the "Other roles & activities" table (universal items not worth listing)
 SUPPRESS_LABELS = {
     "General Administration",
-    "Specific Administrative Responsibilities",  # rollup of Additional Activities tab — shown as individual items instead
+    "Specific Administrative Responsibilities",  # rollup of leadership items on Additional Activities tab
+    "Other Teaching Activity",                   # rollup of teaching items on Additional Activities tab
 }
 
 # Friendly names for teaching period codes
@@ -134,6 +135,7 @@ SUPERVISION_MODULES = {
     "KV6013": {"divisor": 12, "label": "UG students"},
     "KF7029": {"divisor":  8, "label": "PG students"},
     "KV7029": {"divisor":  8, "label": "PG students"},
+    "PE7046": {"divisor":  6, "label": "PG students"},
 }
 
 # Modules where the team list is suppressed (too large to be useful)
@@ -330,11 +332,19 @@ def extract_staff(ws, wadd, sec, col):
             add(f"Off-campus: {partner} – {act}", "teaching", n(r))
 
     # Projects & Supervision (type in col B)
+    _pgr_labels = {"PGR Supervision (1st Supervisor)", "PGR Supervision (2nd Supervisor)", "PGR Supervision (3rd Supervisor)"}
+    _pgr_total = 0.0
     s, e = sec["Projects & Supervision"]
     for r in range(s + 2, e + 1):
         lab = ws.cell(row=r, column=COL_B).value
-        if lab and n(r) and not str(lab).endswith("Total"):
+        if not lab or not n(r) or str(lab).endswith("Total"):
+            continue
+        if str(lab).strip() in _pgr_labels:
+            _pgr_total += n(r)
+        else:
             add(str(lab), "teaching", n(r))
+    if _pgr_total:
+        add("PGR Supervision", "teaching", _pgr_total)
 
     # Programme Management — non module-tutor roles (Programme Leader, Year Tutor…)
     s, e = sec["Programme Management"]
@@ -388,7 +398,8 @@ def extract_staff(ws, wadd, sec, col):
                 desc = wadd.cell(row=r, column=5).value
                 hrs = num(wadd.cell(row=r, column=6).value)
                 label = desc or activity or "unspecified"
-                add(str(label), "leadership", hrs)
+                cat = "teaching" if isinstance(activity, str) and activity.strip() == "Other Teaching" else "leadership"
+                add(str(label), cat, hrs)
 
     return {"ident": ident, "totals": totals, "modules": module_rows,
             "others": others}
@@ -614,7 +625,8 @@ def build_pdf(data, out_path, teams=None, tutors=None):
                 tutor_cell = f"{n} {sup['label']}"
             else:
                 tutor_cell = fmt(m["tutor"])
-            rows.append([_short(m["code"], 10), title_cell,
+            code_cell = Paragraph(m["code"], cell) if " " in (m["code"] or "") else (m["code"] or "")
+            rows.append([code_cell, title_cell,
                          fmt(m["teach"]), fmt(m["assess"]),
                          tutor_cell, fmt(m["total"])])
         tbl = Table(rows, colWidths=[0.10*DW, 0.45*DW, 0.10*DW, 0.12*DW, 0.12*DW, 0.11*DW])
