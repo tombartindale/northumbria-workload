@@ -6,6 +6,4 @@ allocation_pdfs
 /*.csv
 module_pdfs/
 /module_pdfs/*
-__pycache__/generate_allocation_pdfs.cpython-314.pyc
-__pycache__/generate_allocation_pdfs.cpython-314.pyc
-admin_sheet.xlsx
+*.xlsx
