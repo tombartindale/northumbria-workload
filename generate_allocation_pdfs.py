@@ -219,22 +219,31 @@ def build_module_tutors(ws, sec):
 
 
 def build_module_teams(ws, sec):
-    """Return {(code, period): [sorted list of names]} for all staff with TEACH/ASSESS hours."""
+    """Return {(code, period): [sorted names]} excluding moderation-only contributors."""
     staff_names = {col: f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
                    for col, _sid, _full in list_staff(ws)}
-    teams = defaultdict(set)
+    # Track non-moderation hours and moderation-only hours separately
+    non_mod = defaultdict(set)   # (code, period) -> {names with teach/non-mod assess hours}
+    mod_only = defaultdict(set)  # (code, period) -> {names with ONLY moderation hours}
     ta_start, ta_end = sec["Teaching and Assessment"]
     for r in range(ta_start + 2, ta_end + 1):
         code = ws.cell(row=r, column=COL_B).value
         rtype = ws.cell(row=r, column=COL_TYPE).value
         if not code or rtype not in ("TEACH", "ASSESS"):
             continue
+        act = ws.cell(row=r, column=COL_ACTIVITY).value
+        is_moderation = isinstance(act, str) and act.strip() == "Moderation"
         period = ws.cell(row=r, column=COL_PERIOD).value
         key = (str(code).strip(), period)
         for col, name in staff_names.items():
             if name and num(ws.cell(row=r, column=col).value) > 0:
-                teams[key].add(name)
-    return {k: sorted(v) for k, v in teams.items()}
+                if is_moderation:
+                    mod_only[key].add(name)
+                else:
+                    non_mod[key].add(name)
+    # Only include staff who have non-moderation hours
+    teams = {k: sorted(v) for k, v in non_mod.items()}
+    return teams
 
 
 # --------------------------------------------------------------------------
@@ -288,15 +297,23 @@ def extract_staff(ws, wadd, sec, col):
             if isinstance(act_label, str) and act_label.strip() == "Project Supervision":
                 m["proj_super"] += val
         elif rtype == "ASSESS":
-            m["assess"] += val
+            act_label = ws.cell(row=r, column=COL_ACTIVITY).value
+            if isinstance(act_label, str) and act_label.strip() == "Moderation":
+                m.setdefault("moderation", 0.0)
+                m["moderation"] += val
+            else:
+                m["assess"] += val
         # TOTAL rows are ignored for summing (used only as a sanity check)
 
     # attach module-tutor hours and build the final module list
+    moderation_total = 0.0
     module_rows = []
     for (code, _period), m in sorted(modules.items()):
         m["tutor"] = tutor.pop(code, 0.0)
+        moderation_total += m.pop("moderation", 0.0)
         m["total"] = m["teach"] + m["assess"] + m["tutor"]
-        module_rows.append(m)
+        if m["total"] > 0:
+            module_rows.append(m)
     # module-tutor entries with no matching teaching row (rare) -> their own line
     for code, hrs in tutor.items():
         module_rows.append({"code": code, "title": "(module tutor only)",
@@ -401,6 +418,9 @@ def extract_staff(ws, wadd, sec, col):
                 cat = "teaching" if isinstance(activity, str) and activity.strip() == "Other Teaching" else "leadership"
                 add(str(label), cat, hrs)
 
+    if moderation_total:
+        add("Moderation", "teaching", moderation_total)
+
     return {"ident": ident, "totals": totals, "modules": module_rows,
             "others": others}
 
@@ -422,6 +442,210 @@ def build_tag_category_map(ws, sec) -> dict:
         if tag and tag != "N/A":
             mapping.setdefault(tag, current)
     return mapping
+
+
+# --------------------------------------------------------------------------
+# Module-view extraction & PDF
+# --------------------------------------------------------------------------
+
+# Display order and short header labels for activity types in module PDFs
+ACTIVITY_ORDER = [
+    "Lectures", "Seminars", "Practicals", "Tutorials",
+    "Demonstrations", "Supervised Work", "Project Supervision",
+    "Marking", "Marking (Calculated)", "Moderation",
+]
+ACTIVITY_SHORT = {
+    "Lectures":             "Lec",
+    "Seminars":             "Sem",
+    "Practicals":           "Prac",
+    "Tutorials":            "Tut",
+    "Demonstrations":       "Demo",
+    "Supervised Work":      "Sup Work",
+    "Project Supervision":  "Proj Sup",
+    "Marking":              "Marking",
+    "Marking (Calculated)": "Marking*",
+    "Moderation":           "Mod",
+}
+
+
+COL_STUDENTS_EXPECTED = 12   # Column L — expected student intake (repurposed in Students Expected: TOTAL rows)
+
+def extract_all_modules(ws, sec):
+    """Return a dict keyed by (code, period) with title, student count, and per-staff activity hours."""
+    staff_names = {
+        col: f"{ws.cell(row=3, column=col).value or ''} "
+             f"{ws.cell(row=4, column=col).value or ''}".strip()
+        for col, _sid, _full in list_staff(ws)
+    }
+    ta_start, ta_end = sec["Teaching and Assessment"]
+    modules = {}   # (code, period) -> {"title", "students", "staff"}
+    for r in range(ta_start + 2, ta_end + 1):
+        code = ws.cell(row=r, column=COL_B).value
+        rtype = ws.cell(row=r, column=COL_TYPE).value
+        if not code:
+            continue
+        period = ws.cell(row=r, column=COL_PERIOD).value
+        key = (str(code).strip(), period)
+        if key not in modules:
+            modules[key] = {
+                "title": ws.cell(row=r, column=COL_TITLE).value or "",
+                "students": 0,
+                "staff": defaultdict(lambda: defaultdict(float)),
+            }
+        act = ws.cell(row=r, column=COL_ACTIVITY).value
+        if rtype == "TOTAL" and isinstance(act, str) and act.strip() == "Students Expected:":
+            val = num(ws.cell(row=r, column=COL_STUDENTS_EXPECTED).value)
+            if val:
+                modules[key]["students"] = int(val)
+            continue
+        if rtype not in ("TEACH", "ASSESS"):
+            continue
+        if not isinstance(act, str) or not act.strip():
+            continue
+        act = act.strip()
+        if act == "Marking (Calculated)":
+            act = "Marking"
+        for col, name in staff_names.items():
+            if not name:
+                continue
+            val = num(ws.cell(row=r, column=col).value)
+            if val:
+                modules[key]["staff"][name][act] += val
+    return modules
+
+
+def build_module_pdf(code, title, periods_data, out_path):
+    """Render a PDF for a module with one section per period.
+
+    periods_data: [(period, staff_dict)] sorted by PERIOD_ORDER
+    staff_dict: {staff_name: {activity: hours}}
+    """
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NU_Logo_White.svg")
+    logo_drawing = svg2rlg(logo_path) if os.path.exists(logo_path) else None
+    if logo_drawing is not None:
+        scale = (BANNER_H * 0.72) / logo_drawing.height
+        logo_drawing.width *= scale
+        logo_drawing.height *= scale
+        logo_drawing.transform = (scale, 0, 0, scale, 0, 0)
+
+    banner_title = f"{code}  {title}"
+    snapshot_line = ("Static snapshot generated "
+                     + datetime.date.today().strftime("%d %B %Y")
+                     + ". Hours allocated to each member of staff.")
+
+    def draw_banner(canvas, doc):
+        canvas.saveState()
+        pw, ph = A4
+        canvas.setFillColor(colors.black)
+        canvas.rect(0, ph - BANNER_H, pw, BANNER_H, fill=1, stroke=0)
+        canvas.setFillColor(colors.white)
+        mid = ph - BANNER_H / 2
+        canvas.setFont("Helvetica-Bold", 13)
+        canvas.drawString(6 * mm, mid + 4, banner_title)
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(6 * mm, mid - 9, snapshot_line)
+        if logo_drawing is not None:
+            lx = pw - logo_drawing.width - 6 * mm
+            ly = ph - BANNER_H + (BANNER_H - logo_drawing.height) / 2
+            renderPDF.draw(logo_drawing, canvas, lx, ly)
+        canvas.restoreState()
+
+    MARGIN = 10 * mm
+    doc = SimpleDocTemplate(out_path, pagesize=A4,
+                            leftMargin=MARGIN, rightMargin=MARGIN,
+                            topMargin=BANNER_H + 6 * mm, bottomMargin=14 * mm,
+                            title=f"Module Summary — {code}")
+    DW = A4[0] - 2 * MARGIN
+    H = ParagraphStyle
+    GREY = colors.HexColor("#888888")
+    LINE = colors.HexColor("#cccccc")
+    sec_style = H("mod_sec", fontName="Helvetica-Bold", fontSize=11,
+                  textColor=TEAL, leading=14)
+    meta_style = H("mod_meta", fontName="Helvetica-Oblique", fontSize=8,
+                   textColor=GREY, leading=11)
+    disc_style = H("mod_disc", fontName="Helvetica-Oblique", fontSize=7.5,
+                   textColor=GREY, leading=10)
+
+    story = []
+    first = True
+
+    for period, period_info in periods_data:
+        staff_data = period_info["staff"]
+        students = period_info["students"]
+        if not first:
+            story.append(Spacer(1, 14))
+        first = False
+
+        period_label = PERIOD_LABELS.get(str(period).strip() if period else "", period or "")
+        heading = period_label
+        if students:
+            heading += f"  —  {students} students expected"
+        story.append(Paragraph(heading, sec_style))
+        story.append(Spacer(1, 5))
+
+        # Collect activities present in this period (exclude Moderation — shown separately)
+        all_acts = []
+        moderators = []
+        for name, acts in staff_data.items():
+            for a in acts:
+                if a == "Moderation":
+                    if name not in moderators:
+                        moderators.append(name)
+                elif a not in all_acts:
+                    all_acts.append(a)
+        all_acts.sort(key=lambda a: (ACTIVITY_ORDER.index(a) if a in ACTIVITY_ORDER else 99, a))
+
+        short_hdrs = [ACTIVITY_SHORT.get(a, a) for a in all_acts]
+        col_w_name = 0.38 * DW
+        n_num = len(all_acts) + 1  # activity cols + Total
+        col_w_each = (DW - col_w_name) / n_num
+        col_widths = [col_w_name] + [col_w_each] * n_num
+
+        rows = [["Staff Member"] + short_hdrs + ["Total"]]
+        col_totals = defaultdict(float)
+        for name, acts in sorted(staff_data.items()):
+            non_mod = {a: h for a, h in acts.items() if a != "Moderation"}
+            if not non_mod:
+                continue
+            row_total = sum(non_mod.values())
+            rows.append([name] + [fmt(non_mod.get(a, 0.0)) for a in all_acts] + [fmt(row_total)])
+            for a in all_acts:
+                col_totals[a] += non_mod.get(a, 0.0)
+
+        grand_total = sum(col_totals.values())
+        total_row_idx = len(rows)
+        rows.append(["Total"] + [fmt(col_totals[a]) for a in all_acts] + [fmt(grand_total)])
+
+        tbl = Table(rows, colWidths=col_widths)
+        st = [("BACKGROUND",    (0, 0), (-1, 0), TEAL),
+              ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+              ("FONTNAME",      (0, 0), (-1, 0), "Helvetica-Bold"),
+              ("FONTSIZE",      (0, 0), (-1, -1), 8.5),
+              ("ALIGN",         (1, 0), (-1, -1), "RIGHT"),
+              ("ALIGN",         (0, 0), (0, -1),  "LEFT"),
+              ("GRID",          (0, 0), (-1, -1), 0.4, LINE),
+              ("ROWBACKGROUNDS",(0, 1), (-1, -2), [colors.white, TEAL_L]),
+              ("TOPPADDING",    (0, 0), (-1, -1), 3),
+              ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+              ("LEFTPADDING",   (0, 0), (-1, -1), 5),
+              ("FONTNAME",      (0, total_row_idx), (-1, total_row_idx), "Helvetica-Bold"),
+              ("BACKGROUND",    (0, total_row_idx), (-1, total_row_idx), TEAL_L)]
+        tbl.setStyle(TableStyle(st))
+        story.append(tbl)
+
+        if moderators:
+            story.append(Spacer(1, 4))
+            story.append(Paragraph(
+                f"<b>Moderator:</b> {', '.join(sorted(moderators))}", meta_style))
+
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        "DRAFT — FOR DISCUSSION ONLY. This document is an automatically generated, "
+        "prototype summary of workload data held in the School Resources Planner. "
+        "Figures are indicative only and do not constitute a formal workload agreement. "
+        "Please contact your Subject Head if you have any questions.", disc_style))
+
+    doc.build(story, onFirstPage=draw_banner, onLaterPages=draw_banner)
 
 
 # --------------------------------------------------------------------------
@@ -724,6 +948,10 @@ def main():
     ap.add_argument("--id", default=None, help="only this staff ID")
     ap.add_argument("--skip-empty", action="store_true",
                     help="skip staff whose grand total is zero")
+    ap.add_argument("--modules", action="store_true",
+                    help="generate per-module PDFs instead of per-staff PDFs")
+    ap.add_argument("--module", default=None,
+                    help="only generate for one module code (use with --modules)")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -731,6 +959,33 @@ def main():
     ws = wb[SHEET]
     wadd = wb[ADDITIONAL_SHEET] if ADDITIONAL_SHEET in wb.sheetnames else None
     sec = find_sections(ws)
+
+    if args.modules:
+        print("Extracting module data…")
+        all_modules = extract_all_modules(ws, sec)
+        # Group by code
+        by_code = defaultdict(dict)
+        titles = {}
+        for (code, period), info in all_modules.items():
+            if info["staff"]:
+                by_code[code][period] = {"staff": info["staff"], "students": info["students"]}
+                titles[code] = info["title"]
+        made = 0
+        for code in sorted(by_code):
+            if args.module and code != args.module:
+                continue
+            periods_data = sorted(
+                by_code[code].items(),
+                key=lambda x: PERIOD_ORDER.get(str(x[0]).strip() if x[0] else "", 99)
+            )
+            fname = f"{safe_name(code)}_Module.pdf"
+            out_path = os.path.join(args.out, fname)
+            build_module_pdf(code, titles[code], periods_data, out_path)
+            made += 1
+            print(f"  {code:<10}  ->  {fname}")
+        print(f"\nDone. {made} module PDF(s) written to '{args.out}'.")
+        return
+
     print("Building module team and tutor maps…")
     teams  = build_module_teams(ws, sec)
     tutors = build_module_tutors(ws, sec)

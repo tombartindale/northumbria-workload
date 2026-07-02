@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(python3 /Users/nhqr5/Documents/Teaching/Workload/generate_allocation_pdfs.py \"/Users/nhqr5/Documents/Teaching/Workload/2026-27 Resources Planner - School of Computer Science \\(updated 2026-03-20\\).xlsm\" --id NHQR5 -o /Users/nhqr5/Documents/Teaching/Workload/preview)",
-      "Bash(pip3 install *)"
+      "Bash(pip3 install *)",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__take_screenshot",
+      "mcp__chrome-devtools__evaluate_script",
+      "Bash(python3 send_allocation_emails.py --id EK123)",
+      "Bash(python3 send_allocation_emails.py --id YY123)"
     ]
   }
 }
