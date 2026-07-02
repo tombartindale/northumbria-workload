@@ -3,3 +3,5 @@ preview/
 .DS_Store
 allocation_pdfs
 *.pyc
+/*.csv
+module_pdfs/
