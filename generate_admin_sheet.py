@@ -14,7 +14,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 from generate_allocation_pdfs import (
-    SHEET, COL_B, COL_TITLE, COL_PERIOD, COL_ACTIVITY,
+    SHEET, COL_B, COL_TITLE, COL_PERIOD, COL_ACTIVITY, COL_TYPE,
     find_sections, list_staff, num,
 )
 
@@ -96,6 +96,28 @@ def build_module_tutors(ws, sec):
     return {k: sorted(v) for k, v in tutors.items()}
 
 
+def build_module_moderators(ws, sec):
+    staff_names = {}
+    for col, _sid, _full in list_staff(ws):
+        name = f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
+        staff_names[col] = name
+
+    moderators = defaultdict(set)
+    ta_start, ta_end = sec["Teaching and Assessment"]
+    for r in range(ta_start + 2, ta_end + 1):
+        code  = ws.cell(row=r, column=COL_B).value
+        rtype = ws.cell(row=r, column=COL_TYPE).value
+        act   = ws.cell(row=r, column=COL_ACTIVITY).value
+        if not code or rtype != "ASSESS":
+            continue
+        if not (isinstance(act, str) and act.strip() == "Moderation"):
+            continue
+        for col, name in staff_names.items():
+            if name and num(ws.cell(row=r, column=col).value) > 0:
+                moderators[str(code).strip()].add(name)
+    return {k: sorted(v) for k, v in moderators.items()}
+
+
 def build_programme_leaders(ws, sec):
     staff_cols = {}
     for col, sid, _full in list_staff(ws):
@@ -123,9 +145,9 @@ def build_programme_leaders(ws, sec):
     return rows
 
 
-def write_module_tutors_sheet(wb, tutors, periods, titles):
+def write_module_tutors_sheet(wb, tutors, periods, titles, moderators):
     ws = wb.create_sheet("Module Tutors")
-    headers = ["Module Code", "Module Title", "Period(s)", "Module Tutor(s)"]
+    headers = ["Module Code", "Module Title", "Period(s)", "Module Tutor(s)", "Moderator(s)"]
     for i, h in enumerate(headers, 1):
         ws.cell(row=1, column=i, value=h)
     style_header(ws, 1, len(headers))
@@ -136,10 +158,11 @@ def write_module_tutors_sheet(wb, tutors, periods, titles):
         ws.cell(row=row, column=2, value=titles.get(code, ""))
         ws.cell(row=row, column=3, value=", ".join(periods.get(code, [])))
         ws.cell(row=row, column=4, value=", ".join(tutors[code]))
+        ws.cell(row=row, column=5, value=", ".join(moderators.get(code, [])))
         style_row(ws, row, len(headers), alt=(row % 2 == 0))
         ws.row_dimensions[row].height = 18
 
-    set_col_widths(ws, [14, 42, 20, 45])
+    set_col_widths(ws, [14, 42, 20, 45, 45])
     ws.freeze_panes = "A2"
 
 
@@ -177,15 +200,16 @@ def main():
     ws    = wb_in[SHEET]
     sec   = find_sections(ws)
 
-    tutors  = build_module_tutors(ws, sec)
-    periods = build_module_period_map(ws, sec)
-    titles  = build_module_title_map(ws, sec)
-    pm_rows = build_programme_leaders(ws, sec)
+    tutors     = build_module_tutors(ws, sec)
+    periods    = build_module_period_map(ws, sec)
+    titles     = build_module_title_map(ws, sec)
+    moderators = build_module_moderators(ws, sec)
+    pm_rows    = build_programme_leaders(ws, sec)
 
     wb_out = openpyxl.Workbook()
     wb_out.remove(wb_out.active)
 
-    write_module_tutors_sheet(wb_out, tutors, periods, titles)
+    write_module_tutors_sheet(wb_out, tutors, periods, titles, moderators)
     write_programme_leaders_sheet(wb_out, pm_rows)
 
     out_path = Path(args.output)

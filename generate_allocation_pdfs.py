@@ -218,6 +218,25 @@ def build_module_tutors(ws, sec):
     return {k: sorted(v) for k, v in tutors.items()}
 
 
+def build_staff_emails(ws) -> dict:
+    """Return {full_name: email} by matching staff IDs against staff_emails.csv."""
+    import csv
+    csv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "staff_emails.csv")
+    id_to_email = {}
+    if os.path.exists(csv_path):
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if row.get("staff_id") and row.get("email"):
+                    id_to_email[row["staff_id"].strip().upper()] = row["email"].strip()
+    emails = {}
+    for col, sid, _ in list_staff(ws):
+        name = f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
+        email = id_to_email.get(sid.strip().upper())
+        if name and email:
+            emails[name] = email
+    return emails
+
+
 def build_module_teams(ws, sec):
     """Return {(code, period): [sorted names]} excluding moderation-only contributors."""
     staff_names = {col: f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
@@ -514,7 +533,7 @@ def extract_all_modules(ws, sec):
     return modules
 
 
-def build_module_pdf(code, title, periods_data, out_path):
+def build_module_pdf(code, title, periods_data, out_path, emails=None):
     """Render a PDF for a module with one section per period.
 
     periods_data: [(period, staff_dict)] sorted by PERIOD_ORDER
@@ -638,6 +657,18 @@ def build_module_pdf(code, title, periods_data, out_path):
             story.append(Paragraph(
                 f"<b>Moderator:</b> {', '.join(sorted(moderators))}", meta_style))
 
+        if emails:
+            teaching_names = sorted(
+                name for name, acts in staff_data.items()
+                if any(a != "Moderation" for a in acts)
+            )
+            team_emails = [emails[n] for n in teaching_names if n in emails]
+            if team_emails:
+                story.append(Spacer(1, 4))
+                story.append(Paragraph(
+                    f"<b>Teaching team emails (copy into Outlook):</b> {'; '.join(team_emails)}",
+                    meta_style))
+
     story.append(Spacer(1, 10))
     story.append(Paragraph(
         "DRAFT — FOR DISCUSSION ONLY. This document is an automatically generated, "
@@ -698,6 +729,8 @@ def fmt(x) -> str:
         return ""
     if isinstance(x, float) and x.is_integer():
         x = int(x)
+    if not isinstance(x, (int, float)):
+        return str(x)
     return f"{x:,}" if isinstance(x, (int,)) else f"{x:,.2f}"
 
 
@@ -944,7 +977,7 @@ def _table_style(numeric_from_col=1, total_rows=None, faint_rows=None, span_rows
 def main():
     ap = argparse.ArgumentParser(description="Generate per-staff allocation PDFs.")
     ap.add_argument("workbook")
-    ap.add_argument("-o", "--out", default="allocation_pdfs")
+    ap.add_argument("-o", "--out", default=None)
     ap.add_argument("--id", default=None, help="only this staff ID")
     ap.add_argument("--skip-empty", action="store_true",
                     help="skip staff whose grand total is zero")
@@ -954,6 +987,8 @@ def main():
                     help="only generate for one module code (use with --modules)")
     args = ap.parse_args()
 
+    if args.out is None:
+        args.out = "module_pdfs" if args.modules else "allocation_pdfs"
     os.makedirs(args.out, exist_ok=True)
     wb = openpyxl.load_workbook(args.workbook, data_only=True)
     ws = wb[SHEET]
@@ -962,6 +997,7 @@ def main():
 
     if args.modules:
         print("Extracting module data…")
+        staff_emails = build_staff_emails(ws)
         all_modules = extract_all_modules(ws, sec)
         # Group by code
         by_code = defaultdict(dict)
@@ -980,7 +1016,7 @@ def main():
             )
             fname = f"{safe_name(code)}_Module.pdf"
             out_path = os.path.join(args.out, fname)
-            build_module_pdf(code, titles[code], periods_data, out_path)
+            build_module_pdf(code, titles[code], periods_data, out_path, emails=staff_emails)
             made += 1
             print(f"  {code:<10}  ->  {fname}")
         print(f"\nDone. {made} module PDF(s) written to '{args.out}'.")
