@@ -2,6 +2,7 @@
 """Send each module tutor their module summary PDF via macOS Mail.app."""
 
 import csv
+import datetime
 import subprocess
 import sys
 from pathlib import Path
@@ -13,13 +14,14 @@ EMAIL_CSV = Path(__file__).parent / "staff_emails.csv"
 MODULE_PDF_DIR = Path(__file__).parent / "module_pdfs"
 
 EMAIL_SUBJECT = "Draft 2026-27 Module Workload Summaries"
-EMAIL_BODY = """\
-Dear {first_name},
+_TODAY = datetime.date.today().strftime("%d %B %Y")
+EMAIL_BODY = f"""\
+Dear {{first_name}},
 
-Please find attached the draft workload summaries for the module(s) you are listed as module tutor for:
+Please find attached the draft workload summaries (generated on {_TODAY}) for the module(s) you are listed as module tutor for:
 
-{module_list}
-{no_pdf_note}
+{{module_list}}
+{{no_pdf_note}}
 
 These documents are indicative, and are being shared to aid in transparency around the allocation process.
 
