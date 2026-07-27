@@ -9,4 +9,4 @@ module_pdfs/
 *.xlsx
 module_tutors.pdf
 admin_doc_notes.docx
-__pycache__/generate_allocation_pdfs.cpython-314.pyc
+__pycache__/
