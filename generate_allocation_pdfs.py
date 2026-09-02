@@ -325,11 +325,14 @@ def extract_staff(ws, wadd, sec, col):
         # TOTAL rows are ignored for summing (used only as a sanity check)
 
     # attach module-tutor hours and build the final module list
-    moderation_total = 0.0
+    moderation_rows = []
     module_rows = []
-    for (code, _period), m in sorted(modules.items()):
+    for (code, period), m in sorted(modules.items()):
         m["tutor"] = tutor.pop(code, 0.0)
-        moderation_total += m.pop("moderation", 0.0)
+        mod_hrs = m.pop("moderation", 0.0)
+        if mod_hrs:
+            moderation_rows.append({"code": code, "title": m["title"],
+                                    "period": period, "hours": mod_hrs})
         m["total"] = m["teach"] + m["assess"] + m["tutor"]
         if m["total"] > 0:
             module_rows.append(m)
@@ -437,11 +440,8 @@ def extract_staff(ws, wadd, sec, col):
                 cat = "teaching" if isinstance(activity, str) and activity.strip() == "Other Teaching" else "leadership"
                 add(str(label), cat, hrs)
 
-    if moderation_total:
-        add("Moderation", "teaching", moderation_total)
-
     return {"ident": ident, "totals": totals, "modules": module_rows,
-            "others": others}
+            "others": others, "moderation": moderation_rows}
 
 
 def build_tag_category_map(ws, sec) -> dict:
@@ -845,6 +845,7 @@ def build_pdf(data, out_path, teams=None, tutors=None):
                 rows.append([period_label(p) if p else "Other", "", "", "", "", ""])
                 span_rows.append(len(rows) - 1)
                 prev_period = p
+
             tutor_names = set((tutors or {}).get(m["code"], []))
             sup = SUPERVISION_MODULES.get(m["code"])
             if m["code"] in NO_TEAM_MODULES:
@@ -890,6 +891,20 @@ def build_pdf(data, out_path, teams=None, tutors=None):
         tbl.setStyle(_table_style(numeric_from_col=2, span_rows=span_rows))
         story.append(tbl)
 
+    # ---- Moderation — one line per module -------------------------------
+    if data["moderation"]:
+        story.append(Paragraph("Moderation", sec_style))
+        sorted_mod = sorted(
+            data["moderation"],
+            key=lambda m: (PERIOD_ORDER.get(str(m["period"] or "").strip(), 50), m["code"]))
+        rows = [["Module", "Hours"]]
+        for m in sorted_mod:
+            label = f"{period_label(m['period']) if m['period'] else 'Other'} – {m['code']} {_short(m['title'], 45)}"
+            rows.append([label, fmt(m["hours"])])
+        tbl = Table(rows, colWidths=[0.87*DW, 0.13*DW])
+        tbl.setStyle(_table_style(numeric_from_col=1))
+        story.append(tbl)
+
     # ---- Other roles & activities -------------------------------------
     story.append(Paragraph("Other roles & activities", sec_style))
     DOT_W = 4 * mm
@@ -898,6 +913,7 @@ def build_pdf(data, out_path, teams=None, tutors=None):
     item_sum = {"teaching": 0.0, "leadership": 0.0, "rse": 0.0}
     module_teaching = sum(m["teach"] + m["assess"] + m["tutor"] for m in data["modules"])
     item_sum["teaching"] += module_teaching
+    item_sum["teaching"] += sum(m["hours"] for m in data["moderation"])
     for o in sorted(data["others"], key=lambda x: (x["category"], -x["hours"])):
         dot_rows.append((len(rows), CAT_DOT_COLORS.get(o["category"], GREY)))
         rows.append(["", _short(o["label"], 72), fmt(o["hours"])])
