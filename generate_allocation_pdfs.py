@@ -167,6 +167,39 @@ def safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", (s or "").strip()).strip("_")
 
 
+def clean_module_code(code) -> str:
+    """Strip trailing annotations (e.g. 'KV7029 (sem 2)' -> 'KV7029') so
+    module-tutor codes match the codes used in the Teaching and Assessment grid."""
+    return re.sub(r"\s*\(.*\)\s*$", "", str(code or "").strip()).strip()
+
+
+def parse_module_tutor_cell(raw):
+    """Split a module-tutor code cell into (clean_code, period_hint).
+
+    Staff are sometimes annotated as tutor for only part of a module's
+    periods, e.g. 'KV7029 (sem 2)'. period_hint is a substring like 'SEM2'
+    to match against a module row's period code, or None if the annotation
+    doesn't look like a period (e.g. 'KV6014 (SHAPE)') or there is none.
+    """
+    raw = str(raw or "").strip()
+    code = clean_module_code(raw)
+    m = re.search(r"\((.*)\)\s*$", raw)
+    period_hint = None
+    if m:
+        note = m.group(1).strip().upper().replace(" ", "")
+        sem_m = re.fullmatch(r"SEM(\d)", note)
+        if sem_m:
+            period_hint = f"SEM{sem_m.group(1)}"
+    return code, period_hint
+
+
+def _period_matches(period_hint, period) -> bool:
+    """True if a module row's period code belongs to the given period hint."""
+    if period_hint is None:
+        return True
+    return period_hint in str(period or "").upper()
+
+
 def find_sections(ws) -> dict:
     """Return {section_name: (start_row, end_row)} by scanning column A."""
     marks = []
@@ -200,7 +233,9 @@ def list_staff(ws):
 
 
 def build_module_tutors(ws, sec):
-    """Return {module_code: [sorted names]} of who holds module-tutor hours for each module."""
+    """Return {module_code: [(name, period_hint), ...]} of who holds module-tutor
+    hours for each module. period_hint is None (applies to all periods) or a
+    period code like 'SEM2' parsed from an annotation such as 'KV7029 (sem 2)'."""
     staff_names = {col: f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
                    for col, _sid, _full in list_staff(ws)}
     tutors = defaultdict(set)
@@ -211,10 +246,11 @@ def build_module_tutors(ws, sec):
             for col, name in staff_names.items():
                 if not name:
                     continue
-                code = ws.cell(row=r, column=col).value
+                raw = ws.cell(row=r, column=col).value
                 hrs = num(ws.cell(row=r + 1, column=col).value)
-                if code and hrs:
-                    tutors[str(code).strip()].add(name)
+                if raw and hrs:
+                    code, period_hint = parse_module_tutor_cell(raw)
+                    tutors[code].add((name, period_hint))
     return {k: sorted(v) for k, v in tutors.items()}
 
 
@@ -284,15 +320,18 @@ def extract_staff(ws, wadd, sec, col):
     prep_hours = n(prep_r) if prep_r else 0.0
 
     # --- module tutor hours by module code (Programme Management) -----------
-    tutor = {}
+    # entries: [(code, period_hint, hrs), ...]; period_hint is None (all
+    # periods) or a period code like 'SEM2' parsed from an annotation.
+    tutor_entries = []
     pm_start, pm_end = sec["Programme Management"]
     for r in range(pm_start, pm_end + 1):
         lab = ws.cell(row=r, column=COL_ACTIVITY).value
         if isinstance(lab, str) and lab.startswith("Module Code"):
-            code = g(r)
+            raw = g(r)
             hrs = n(r + 1)                # the row beneath holds the hours
-            if code and hrs:
-                tutor[str(code).strip()] = tutor.get(str(code).strip(), 0.0) + hrs
+            if raw and hrs:
+                code, period_hint = parse_module_tutor_cell(raw)
+                tutor_entries.append((code, period_hint, hrs))
 
     # --- teaching modules (Teaching and Assessment grid) --------------------
     ta_start, ta_end = sec["Teaching and Assessment"]
@@ -327,8 +366,13 @@ def extract_staff(ws, wadd, sec, col):
     # attach module-tutor hours and build the final module list
     moderation_rows = []
     module_rows = []
+    tutor_used = [False] * len(tutor_entries)
     for (code, period), m in sorted(modules.items()):
-        m["tutor"] = tutor.pop(code, 0.0)
+        m["tutor"] = 0.0
+        for i, (t_code, t_hint, t_hrs) in enumerate(tutor_entries):
+            if t_code == code and _period_matches(t_hint, period):
+                m["tutor"] += t_hrs
+                tutor_used[i] = True
         mod_hrs = m.pop("moderation", 0.0)
         if mod_hrs:
             moderation_rows.append({"code": code, "title": m["title"],
@@ -337,10 +381,11 @@ def extract_staff(ws, wadd, sec, col):
         if m["total"] > 0:
             module_rows.append(m)
     # module-tutor entries with no matching teaching row (rare) -> their own line
-    for code, hrs in tutor.items():
-        module_rows.append({"code": code, "title": "(module tutor only)",
-                            "period": None, "teach": 0.0, "assess": 0.0,
-                            "tutor": hrs, "total": hrs})
+    for i, (code, _hint, hrs) in enumerate(tutor_entries):
+        if not tutor_used[i]:
+            module_rows.append({"code": code, "title": "(module tutor only)",
+                                "period": None, "teach": 0.0, "assess": 0.0,
+                                "tutor": hrs, "total": hrs})
 
     # --- other itemised roles / activities ----------------------------------
     # category default per section; Programme Management & Additional Roles use
@@ -846,14 +891,15 @@ def build_pdf(data, out_path, teams=None, tutors=None):
                 span_rows.append(len(rows) - 1)
                 prev_period = p
 
-            tutor_names = set((tutors or {}).get(m["code"], []))
+            tutor_names = {name for name, hint in (tutors or {}).get(m["code"], [])
+                           if _period_matches(hint, m["period"])}
             sup = SUPERVISION_MODULES.get(m["code"])
             if m["code"] in NO_TEAM_MODULES:
                 # Team suppressed — just show the module tutor
                 if my_name in tutor_names:
                     sub_line = "<b>You</b>"
                 elif tutor_names:
-                    sub_line = ", ".join(sorted(tutor_names))
+                    sub_line = ", ".join(f"<b>{t}</b> (MT)" for t in sorted(tutor_names))
                 else:
                     sub_line = None
             else:
@@ -863,7 +909,7 @@ def build_pdf(data, out_path, teams=None, tutors=None):
                 if my_name in tutor_names:
                     tutor_part = "<b>You</b>"
                 elif tutor_names:
-                    tutor_part = ", ".join(f"<b>{t}</b>" for t in sorted(tutor_names))
+                    tutor_part = ", ".join(f"<b>{t}</b> (MT)" for t in sorted(tutor_names))
                 else:
                     tutor_part = None
                 others = [n for n in team if n not in tutor_names]

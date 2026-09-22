@@ -122,14 +122,15 @@ def main():
     staff_modules: dict[str, list] = defaultdict(list)
     staff_no_pdf: dict[str, list] = defaultdict(list)
     no_pdf = []
-    for code, tutor_names in sorted(tutors.items()):
+    for code, tutor_entries in sorted(tutors.items()):
+        names = sorted({name for name, _hint in tutor_entries})
         pdf_path = pdf_dir / f"{safe_name(code)}_Module.pdf"
         if not pdf_path.exists():
             no_pdf.append(code)
-            for name in tutor_names:
+            for name in names:
                 staff_no_pdf[name].append(code)
             continue
-        for name in tutor_names:
+        for name in names:
             staff_modules[name].append((code, pdf_path))
 
     if no_pdf:
