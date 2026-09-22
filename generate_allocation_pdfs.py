@@ -254,6 +254,52 @@ def build_module_tutors(ws, sec):
     return {k: sorted(v) for k, v in tutors.items()}
 
 
+def build_personal_tutors(ws, sec):
+    """Return [(name, sid, hours), ...] sorted by name for everyone with hours
+    in the 'Personal Tutoring' row of the Other Teaching Delivery section."""
+    s, e = sec["Other Teaching Delivery"]
+    tutor_row = None
+    for r in range(s, e + 1):
+        lab = ws.cell(row=r, column=COL_B).value
+        if isinstance(lab, str) and lab.strip() == "Personal Tutoring":
+            tutor_row = r
+            break
+    if tutor_row is None:
+        return []
+    rows = []
+    for col, sid, _full in list_staff(ws):
+        hrs = num(ws.cell(row=tutor_row, column=col).value)
+        if hrs:
+            name = f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
+            rows.append((name, sid, hrs))
+    rows.sort(key=lambda x: x[0])
+    return rows
+
+
+def build_personal_tutor_managers(wadd, ident_by_id) -> list[tuple[str, float]]:
+    """Return [(name, hours), ...] for rows on the Additional Activities tab
+    whose Description mentions 'Personal Tutor Manager'."""
+    managers = []
+    if wadd is None:
+        return managers
+    for r in range(2, wadd.max_row + 1):
+        desc = wadd.cell(row=r, column=5).value
+        if isinstance(desc, str) and "personal tutor manager" in desc.lower():
+            sid = wadd.cell(row=r, column=2).value
+            hrs = num(wadd.cell(row=r, column=6).value)
+            name = ident_by_id.get(str(sid).strip().upper()) if sid else None
+            if not name:
+                raw = wadd.cell(row=r, column=3).value
+                surname_forename = re.sub(r"\s*\(.*\)\s*$", "", str(raw or "")).strip()
+                if "," in surname_forename:
+                    surname, forename = (p.strip() for p in surname_forename.split(",", 1))
+                    name = f"{forename} {surname}".strip()
+                else:
+                    name = surname_forename
+            managers.append((name, hrs))
+    return managers
+
+
 def build_staff_emails(ws) -> dict:
     """Return {full_name: email} by matching staff IDs against staff_emails.csv."""
     import csv
@@ -724,6 +770,104 @@ def build_module_pdf(code, title, periods_data, out_path, emails=None):
     doc.build(story, onFirstPage=draw_banner, onLaterPages=draw_banner)
 
 
+def build_personal_tutors_pdf(managers, tutors, emails, out_path):
+    """Render a single PDF: personal tutor manager(s), then everyone holding
+    personal-tutor hours with their hours, then an Outlook-ready email list.
+
+    managers: [(name, hours), ...]
+    tutors:   [(name, sid, hours), ...] sorted by name
+    emails:   {name: email}
+    """
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NU_Logo_White.svg")
+    logo_drawing = svg2rlg(logo_path) if os.path.exists(logo_path) else None
+    if logo_drawing is not None:
+        scale = (BANNER_H * 0.72) / logo_drawing.height
+        logo_drawing.width *= scale
+        logo_drawing.height *= scale
+        logo_drawing.transform = (scale, 0, 0, scale, 0, 0)
+
+    snapshot_line = ("Static snapshot generated "
+                     + datetime.date.today().strftime("%d %B %Y")
+                     + ". Personal tutor allocation across the School.")
+
+    def draw_banner(canvas, doc):
+        canvas.saveState()
+        pw, ph = A4
+        canvas.setFillColor(colors.black)
+        canvas.rect(0, ph - BANNER_H, pw, BANNER_H, fill=1, stroke=0)
+        canvas.setFillColor(colors.white)
+        mid = ph - BANNER_H / 2
+        canvas.setFont("Helvetica-Bold", 13)
+        canvas.drawString(6 * mm, mid + 4, "Personal Tutors")
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(6 * mm, mid - 9, snapshot_line)
+        if logo_drawing is not None:
+            lx = pw - logo_drawing.width - 6 * mm
+            ly = ph - BANNER_H + (BANNER_H - logo_drawing.height) / 2
+            renderPDF.draw(logo_drawing, canvas, lx, ly)
+        canvas.restoreState()
+
+    MARGIN = 10 * mm
+    doc = SimpleDocTemplate(out_path, pagesize=A4,
+                            leftMargin=MARGIN, rightMargin=MARGIN,
+                            topMargin=BANNER_H + 6 * mm, bottomMargin=14 * mm,
+                            title="Personal Tutors")
+    DW = A4[0] - 2 * MARGIN
+    styles = getSampleStyleSheet()
+    H = lambda **kw: ParagraphStyle("h", parent=styles["Normal"], **kw)
+    sec_style  = H(fontName="Helvetica-Bold", fontSize=11, textColor=TEAL,
+                   spaceBefore=10, spaceAfter=4)
+    meta_style = H(fontName="Helvetica-Oblique", fontSize=8, textColor=GREY, leading=11)
+    disc_style = H(fontName="Helvetica-Oblique", fontSize=7.5, textColor=GREY, leading=10)
+
+    story = []
+
+    # ---- Personal Tutor Manager(s) -------------------------------------
+    story.append(Paragraph("Personal Tutor Manager", sec_style))
+    if managers:
+        rows = [["Name"]]
+        for name, _hrs in sorted(managers):
+            rows.append([name])
+        tbl = Table(rows, colWidths=[DW])
+        tbl.setStyle(_table_style(numeric_from_col=1))
+        story.append(tbl)
+    else:
+        story.append(Paragraph("No Personal Tutor Manager found.", meta_style))
+
+    # ---- Personal tutors --------------------------------------------------
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("Personal Tutors", sec_style))
+    rows = [["Name", "Staff ID"]]
+    for name, sid, _hrs in tutors:
+        rows.append([name, sid])
+    tbl = Table(rows, colWidths=[0.75 * DW, 0.25 * DW])
+    tbl.setStyle(_table_style(numeric_from_col=2))
+    story.append(tbl)
+
+    # ---- Email list for Outlook ----------------------------------------
+    all_names = [n for n, _hrs in managers] + [n for n, _sid, _hrs in tutors]
+    seen = set()
+    email_list = []
+    for name in all_names:
+        addr = emails.get(name)
+        if addr and addr not in seen:
+            seen.add(addr)
+            email_list.append(addr)
+    if email_list:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Emails (copy into Outlook)", sec_style))
+        story.append(Paragraph("; ".join(email_list), meta_style))
+
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        "DRAFT — FOR DISCUSSION ONLY. This document is an automatically generated, "
+        "prototype summary of workload data held in the School Resources Planner. "
+        "Figures are indicative only and do not constitute a formal workload agreement. "
+        "Please contact your Subject Head if you have any questions.", disc_style))
+
+    doc.build(story, onFirstPage=draw_banner, onLaterPages=draw_banner)
+
+
 # --------------------------------------------------------------------------
 # PDF rendering helpers
 # --------------------------------------------------------------------------
@@ -1047,6 +1191,8 @@ def main():
                     help="generate per-module PDFs instead of per-staff PDFs")
     ap.add_argument("--module", default=None,
                     help="only generate for one module code (use with --modules)")
+    ap.add_argument("--personal-tutors", action="store_true",
+                    help="generate a single Personal Tutors summary PDF instead of per-staff PDFs")
     args = ap.parse_args()
 
     if args.out is None:
@@ -1082,6 +1228,22 @@ def main():
             made += 1
             print(f"  {code:<10}  ->  {fname}")
         print(f"\nDone. {made} module PDF(s) written to '{args.out}'.")
+        return
+
+    if args.personal_tutors:
+        print("Extracting Personal Tutors data…")
+        staff_emails = build_staff_emails(ws)
+        ident_by_id = {}
+        for col, sid, _full in list_staff(ws):
+            name = f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
+            if name:
+                ident_by_id[sid.strip().upper()] = name
+        managers = build_personal_tutor_managers(wadd, ident_by_id)
+        tutors = build_personal_tutors(ws, sec)
+        fname = "Personal_Tutors.pdf"
+        out_path = os.path.join(args.out, fname)
+        build_personal_tutors_pdf(managers, tutors, staff_emails, out_path)
+        print(f"  -> {fname}  ({len(managers)} manager(s), {len(tutors)} tutor(s))")
         return
 
     print("Building module team and tutor maps…")

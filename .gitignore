@@ -10,3 +10,4 @@ module_pdfs/
 module_tutors.pdf
 admin_doc_notes.docx
 __pycache__
+*.pdf
