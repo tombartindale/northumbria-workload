@@ -13,12 +13,12 @@ from generate_allocation_pdfs import SHEET, find_sections, list_staff, build_mod
 EMAIL_CSV = Path(__file__).parent / "staff_emails.csv"
 MODULE_PDF_DIR = Path(__file__).parent / "module_pdfs"
 
-EMAIL_SUBJECT = "Draft 2026-27 Module Workload Summaries"
+EMAIL_SUBJECT = "2026-27 Module Workload Summaries"
 _TODAY = datetime.date.today().strftime("%d %B %Y")
 EMAIL_BODY = f"""\
 Dear {{first_name}},
 
-Please find attached the draft workload summaries (generated on {_TODAY}) for the module(s) you are listed as module tutor for:
+Please find attached the workload summaries (generated on {_TODAY}) for the module(s) you are listed as module tutor for:
 
 {{module_list}}
 {{no_pdf_note}}

@@ -9,12 +9,12 @@ from pathlib import Path
 
 EMAIL_CSV = Path(__file__).parent / "staff_emails.csv"
 
-EMAIL_SUBJECT = "Draft 2026-27 Teaching Workload Allocation"
+EMAIL_SUBJECT = "2026-27 Teaching Workload Allocation"
 _TODAY = datetime.date.today().strftime("%d %B %Y")
 EMAIL_BODY = f"""\
 Dear {{first_name}},
 
-Please find attached your draft workload allocation summary for 2026-27, generated on {_TODAY}.
+Please find attached your workload allocation summary for 2026-27, generated on {_TODAY}.
 
 This document is indicative, and is being shared to aid in transparency around the allocation process.
 

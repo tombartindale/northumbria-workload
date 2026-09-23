@@ -276,15 +276,15 @@ def build_personal_tutors(ws, sec):
     return rows
 
 
-def build_personal_tutor_managers(wadd, ident_by_id) -> list[tuple[str, float]]:
+def build_additional_activity_people(wadd, ident_by_id, match_text) -> list[tuple[str, float]]:
     """Return [(name, hours), ...] for rows on the Additional Activities tab
-    whose Description mentions 'Personal Tutor Manager'."""
-    managers = []
+    whose Description contains match_text (case-insensitive)."""
+    people = []
     if wadd is None:
-        return managers
+        return people
     for r in range(2, wadd.max_row + 1):
         desc = wadd.cell(row=r, column=5).value
-        if isinstance(desc, str) and "personal tutor manager" in desc.lower():
+        if isinstance(desc, str) and match_text.lower() in desc.lower():
             sid = wadd.cell(row=r, column=2).value
             hrs = num(wadd.cell(row=r, column=6).value)
             name = ident_by_id.get(str(sid).strip().upper()) if sid else None
@@ -296,8 +296,12 @@ def build_personal_tutor_managers(wadd, ident_by_id) -> list[tuple[str, float]]:
                     name = f"{forename} {surname}".strip()
                 else:
                     name = surname_forename
-            managers.append((name, hrs))
-    return managers
+            people.append((name, hrs))
+    return people
+
+
+def build_personal_tutor_managers(wadd, ident_by_id) -> list[tuple[str, float]]:
+    return build_additional_activity_people(wadd, ident_by_id, "personal tutor manager")
 
 
 def build_staff_emails(ws) -> dict:
@@ -868,6 +872,107 @@ def build_personal_tutors_pdf(managers, tutors, emails, out_path):
     doc.build(story, onFirstPage=draw_banner, onLaterPages=draw_banner)
 
 
+def build_ethics_committee_pdf(leads, members, emails, out_path):
+    """Render a single PDF: Ethics Lead(s), then CIS Ethics Committee members,
+    then an Outlook-ready email list.
+
+    leads:   [(name, hours), ...]
+    members: [(name, hours), ...]
+    emails:  {name: email}
+    """
+    logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "NU_Logo_White.svg")
+    logo_drawing = svg2rlg(logo_path) if os.path.exists(logo_path) else None
+    if logo_drawing is not None:
+        scale = (BANNER_H * 0.72) / logo_drawing.height
+        logo_drawing.width *= scale
+        logo_drawing.height *= scale
+        logo_drawing.transform = (scale, 0, 0, scale, 0, 0)
+
+    snapshot_line = ("Static snapshot generated "
+                     + datetime.date.today().strftime("%d %B %Y")
+                     + ". Ethics committee membership across the School.")
+
+    def draw_banner(canvas, doc):
+        canvas.saveState()
+        pw, ph = A4
+        canvas.setFillColor(colors.black)
+        canvas.rect(0, ph - BANNER_H, pw, BANNER_H, fill=1, stroke=0)
+        canvas.setFillColor(colors.white)
+        mid = ph - BANNER_H / 2
+        canvas.setFont("Helvetica-Bold", 13)
+        canvas.drawString(6 * mm, mid + 4, "Ethics Committee")
+        canvas.setFont("Helvetica", 8)
+        canvas.drawString(6 * mm, mid - 9, snapshot_line)
+        if logo_drawing is not None:
+            lx = pw - logo_drawing.width - 6 * mm
+            ly = ph - BANNER_H + (BANNER_H - logo_drawing.height) / 2
+            renderPDF.draw(logo_drawing, canvas, lx, ly)
+        canvas.restoreState()
+
+    MARGIN = 10 * mm
+    doc = SimpleDocTemplate(out_path, pagesize=A4,
+                            leftMargin=MARGIN, rightMargin=MARGIN,
+                            topMargin=BANNER_H + 6 * mm, bottomMargin=14 * mm,
+                            title="Ethics Committee")
+    DW = A4[0] - 2 * MARGIN
+    styles = getSampleStyleSheet()
+    H = lambda **kw: ParagraphStyle("h", parent=styles["Normal"], **kw)
+    sec_style  = H(fontName="Helvetica-Bold", fontSize=11, textColor=TEAL,
+                   spaceBefore=10, spaceAfter=4)
+    meta_style = H(fontName="Helvetica-Oblique", fontSize=8, textColor=GREY, leading=11)
+    disc_style = H(fontName="Helvetica-Oblique", fontSize=7.5, textColor=GREY, leading=10)
+
+    story = []
+
+    # ---- Ethics Lead ----------------------------------------------------
+    story.append(Paragraph("Ethics Lead", sec_style))
+    if leads:
+        rows = [["Name"]]
+        for name, _hrs in sorted(leads):
+            rows.append([name])
+        tbl = Table(rows, colWidths=[DW])
+        tbl.setStyle(_table_style(numeric_from_col=1))
+        story.append(tbl)
+    else:
+        story.append(Paragraph("No Ethics Lead found.", meta_style))
+
+    # ---- CIS Ethics Committee --------------------------------------------
+    story.append(Spacer(1, 10))
+    story.append(Paragraph("CIS Ethics Committee", sec_style))
+    if members:
+        rows = [["Name"]]
+        for name, _hrs in sorted(members):
+            rows.append([name])
+        tbl = Table(rows, colWidths=[DW])
+        tbl.setStyle(_table_style(numeric_from_col=1))
+        story.append(tbl)
+    else:
+        story.append(Paragraph("No committee members found.", meta_style))
+
+    # ---- Email list for Outlook ----------------------------------------
+    all_names = [n for n, _hrs in leads] + [n for n, _hrs in members]
+    seen = set()
+    email_list = []
+    for name in all_names:
+        addr = emails.get(name)
+        if addr and addr not in seen:
+            seen.add(addr)
+            email_list.append(addr)
+    if email_list:
+        story.append(Spacer(1, 10))
+        story.append(Paragraph("Emails (copy into Outlook)", sec_style))
+        story.append(Paragraph("; ".join(email_list), meta_style))
+
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        "DRAFT — FOR DISCUSSION ONLY. This document is an automatically generated, "
+        "prototype summary of workload data held in the School Resources Planner. "
+        "Figures are indicative only and do not constitute a formal workload agreement. "
+        "Please contact your Subject Head if you have any questions.", disc_style))
+
+    doc.build(story, onFirstPage=draw_banner, onLaterPages=draw_banner)
+
+
 # --------------------------------------------------------------------------
 # PDF rendering helpers
 # --------------------------------------------------------------------------
@@ -1193,6 +1298,8 @@ def main():
                     help="only generate for one module code (use with --modules)")
     ap.add_argument("--personal-tutors", action="store_true",
                     help="generate a single Personal Tutors summary PDF instead of per-staff PDFs")
+    ap.add_argument("--ethics-committee", action="store_true",
+                    help="generate a single Ethics Committee summary PDF instead of per-staff PDFs")
     args = ap.parse_args()
 
     if args.out is None:
@@ -1244,6 +1351,22 @@ def main():
         out_path = os.path.join(args.out, fname)
         build_personal_tutors_pdf(managers, tutors, staff_emails, out_path)
         print(f"  -> {fname}  ({len(managers)} manager(s), {len(tutors)} tutor(s))")
+        return
+
+    if args.ethics_committee:
+        print("Extracting Ethics Committee data…")
+        staff_emails = build_staff_emails(ws)
+        ident_by_id = {}
+        for col, sid, _full in list_staff(ws):
+            name = f"{ws.cell(row=3, column=col).value or ''} {ws.cell(row=4, column=col).value or ''}".strip()
+            if name:
+                ident_by_id[sid.strip().upper()] = name
+        leads = build_additional_activity_people(wadd, ident_by_id, "ethics lead")
+        members = build_additional_activity_people(wadd, ident_by_id, "cis ethics committee")
+        fname = "Ethics_Committee.pdf"
+        out_path = os.path.join(args.out, fname)
+        build_ethics_committee_pdf(leads, members, staff_emails, out_path)
+        print(f"  -> {fname}  ({len(leads)} lead(s), {len(members)} member(s))")
         return
 
     print("Building module team and tutor maps…")
